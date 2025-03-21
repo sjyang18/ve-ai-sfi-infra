@@ -118,36 +118,104 @@ module vnetDeployment 'br/public:avm/res/network/virtual-network:0.5.4' = {
           'Microsoft.Storage'
           'Microsoft.Web'
         ]
+        defaultOutboundAccess: false
       }
       {
         name: 'WebAppSubnet'
         addressPrefix: '10.0.2.0/24'
         delegation: 'Microsoft.Web/serverFarms'
         networkSecurityGroupResourceId: m365nsg.outputs.id
-        
+        defaultOutboundAccess: false       
       }
       {
         name: 'ShellSubnet'
         addressPrefix: '10.0.3.0/24'
         delegation: 'Microsoft.ContainerInstance/containerGroups'
         networkSecurityGroupResourceId: m365nsg.outputs.id
+        defaultOutboundAccess: false
       }
       {
         name: 'JumpboxSubnet'
         addressPrefix: '10.0.63.0/26'
         networkSecurityGroupResourceId: bastionNsg.outputs.id
+        defaultOutboundAccess: false
       }
       {
         name: 'AzureBastionSubnet'
         addressPrefix: '10.0.64.0/26'
         networkSecurityGroupResourceId: bastionNsg.outputs.id
-
+        defaultOutboundAccess: false
       }
     ]
     tags: tags
   }
 }
 
+module lbPublicIpAadress 'br/public:avm/res/network/public-ip-address:0.8.0' = {
+  name: 'loadBalancerPublicIp'
+  scope: rg
+  params: {
+    name: '${resourceNamePrefix}-lb-pip'
+    location: location
+    skuName: 'Standard'
+    skuTier: 'Regional'
+    publicIPAllocationMethod: 'Static'
+    tags: tags
+  }
+}
+module loadBalancer 'br/public:avm/res/network/load-balancer:0.4.1' = {
+  name: 'loadBalancerDeployment'
+  scope: rg
+  params: {
+    name: '${resourceNamePrefix}-lb'
+    location: location
+    frontendIPConfigurations: [
+      {
+        name: 'LoadBalancerFrontend'
+        publicIPAddressId: lbPublicIpAadress.outputs.resourceId
+      }
+    ]
+    backendAddressPools: [
+      {
+        name: 'JumpboxBackendPool'
+      }
+    ]
+    loadBalancingRules: [
+      {
+        name: 'JumpboxLoadBalancingRule'
+        frontendIPConfigurationName: 'LoadBalancerFrontend'
+        backendAddressPoolName: 'JumpboxBackendPool'
+        frontendPort: 3389
+        backendPort: 3389
+        protocol: 'Tcp'
+        enableFloatingIP: false
+        idleTimeoutInMinutes: 4
+        enableTcpReset: false
+        probeName: 'JumpboxHealthProbe'
+      }
+    ]
+    outboundRules: [
+      {
+        name: 'OutboundRule1'
+        protocol: 'All'
+        frontendIPConfigurationName: 'LoadBalancerFrontend'
+        backendAddressPoolName: 'JumpboxBackendPool'
+        idleTimeoutInMinutes: 4
+        enableTcpReset: false
+      }
+    ]
+    probes: [
+      {
+        name: 'JumpboxHealthProbe'
+        protocol: 'Tcp'
+        port: 3389
+        intervalInSeconds: 15
+        numberOfProbes: 2
+      }
+    ]
+    tags: tags
+  }
+}
 
 module bastionHost 'br/public:avm/res/network/bastion-host:0.6.1' = {
   name: 'bastionHostDeployment'
@@ -241,7 +309,14 @@ module aoaiDeployment 'br/public:avm/res/cognitive-services/account:0.5.3' = {
           action: 'Allow'
         }
       ]
-      ipRules: [] // add your azure portal client ip here once you log in bastion
+      ipRules: [
+        {
+          value: azurePortalAccessIp
+        }
+        {
+          value: lbPublicIpAadress.outputs.ipAddress
+        }
+      ]
       bypass: 'AzureServices'
     }
     roleAssignments: [
@@ -314,7 +389,9 @@ module searchServiceDeployment 'br/public:avm/res/search/search-service:0.9.1' =
         {
           value: azurePortalAccessIp
         }
-        // add your azure portal client ip here once you log in bastion
+        {
+          value: lbPublicIpAadress.outputs.ipAddress
+        }
       ]
       bypass: 'AzurePortal'
     }

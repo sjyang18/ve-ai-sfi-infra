@@ -21,6 +21,12 @@ param userPrincipalId string
 @description('azurePortalAccessIp')
 param azurePortalAccessIp string = '52.252.175.48'  // nslookup stamp2.ext.search.windows.net
 
+@description('List of CIDR blocks to allow access to the Azure OpenAI service and Azure Search.')
+param allowedCidrBlocks array
+
+var varAllowedCidrBlocks = [for cidrBlock in allowedCidrBlocks: {
+  value: cidrBlock
+}]
 
 // Tags that should be applied to all resources.
 // 
@@ -229,6 +235,73 @@ module bastionHost 'br/public:avm/res/network/bastion-host:0.6.1' = {
   }
 }
 
+// Generate a more unpredictable password for the jumpbox VM
+param utcTime string = utcNow()
+var deploymentTimeHash = uniqueString(deployment().name, utcTime)
+var subscriptionHash = uniqueString(subscription().subscriptionId)
+var resourceGroupHash = uniqueString(resourceGroupName)
+var jumpboxPassword = 'JBox${toUpper(substring(deploymentTimeHash, 0, 3))}@${substring(subscriptionHash, 0, 4)}${substring(resourceGroupHash, 0, 3)}!'
+var jumpboxVmName = substring('${resourceNamePrefix}jbx', 0, min(15, length('${resourceNamePrefix}jbx')))
+
+// Add jumpbox VM for remote administration
+module jumpboxVm 'br/public:avm/res/compute/virtual-machine:0.12.3' = {
+  name: 'jumpbox-vm-deployment'
+  scope: rg
+  params: {
+    name: jumpboxVmName
+    location: location
+    adminUsername: 'azureuser'
+    zone: 3
+    adminPassword: jumpboxPassword
+    // Fix NIC configurations to include required parameters
+    nicConfigurations: [
+      {
+        name: '${resourceNamePrefix}-jumpbox-nic-configuration'  // Add explicit name
+        nicSuffix: '-nic'  // Add suffix
+        ipConfigurations: [
+          {
+            name: 'ipconfig1'
+            subnetResourceId: vnetDeployment.outputs.subnetResourceIds[3] // JumpboxSubnet
+            privateIPAllocationMethod: 'Dynamic'
+          }
+        ]
+        loadBalancerBackendAddressPools: [
+          {
+            id: loadBalancer.outputs.backendpools[0].id // JumpboxBackendPool
+          }
+        ]
+        enableAcceleratedNetworking: false
+      }
+    ]
+    osType: 'Windows'
+    computerName: jumpboxVmName
+    imageReference: {
+      publisher: 'MicrosoftWindowsServer'
+      offer: 'WindowsServer'
+      sku: '2022-datacenter-azure-edition-hotpatch-smalldisk'
+      version: 'latest'
+    }
+    osDisk: {
+      createOption: 'FromImage'
+      diskSizeGB: 128
+      managedDisk: {
+        storageAccountType: 'Premium_LRS'
+      }
+    }
+    vmSize: 'Standard_DS1_v2'
+    enableAutomaticUpdates: true
+    vTpmEnabled: true
+    secureBootEnabled: true
+    securityType: 'TrustedLaunch'
+    patchMode: 'AutomaticByPlatform'
+    encryptionAtHost: false
+    tags: tags
+  }
+  dependsOn: [
+    bastionHost
+  ]
+}
+
 
 
 module privateDnsZones 'modules/privateDnsZones.bicep' = {
@@ -309,14 +382,14 @@ module aoaiDeployment 'br/public:avm/res/cognitive-services/account:0.5.3' = {
           action: 'Allow'
         }
       ]
-      ipRules: [
+      ipRules: concat([
         {
           value: azurePortalAccessIp
         }
         {
           value: lbPublicIpAadress.outputs.ipAddress
         }
-      ]
+      ], varAllowedCidrBlocks)
       bypass: 'AzureServices'
     }
     roleAssignments: [
@@ -385,14 +458,14 @@ module searchServiceDeployment 'br/public:avm/res/search/search-service:0.9.1' =
     authOptions: null // disable local auth => this should be null
     publicNetworkAccess: 'Enabled' // to open up the service to firewall-based access.
     networkRuleSet: {
-      ipRules: [
+      ipRules: concat([
         {
           value: azurePortalAccessIp
         }
         {
           value: lbPublicIpAadress.outputs.ipAddress
         }
-      ]
+      ], varAllowedCidrBlocks)
       bypass: 'AzurePortal'
     }
     roleAssignments: [
@@ -594,6 +667,6 @@ module trustAzureServicesInSearch 'modules/trustAzureServices.bicep' = {
     managedIdentityResourceId: userAssignedIdentity.outputs.resourceId
     location: location
     resourceId: searchServiceDeployment.outputs.resourceId
-    azurePortalAccessIp: azurePortalAccessIp
   }
 }
+

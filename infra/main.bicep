@@ -66,6 +66,7 @@ resource rg 'Microsoft.Resources/resourceGroups@2022-09-01' = {
   tags: tags
 }
 
+
 module userAssignedIdentity 'br/public:avm/res/managed-identity/user-assigned-identity:0.4.0' = {
   name: identityName
   scope: rg
@@ -118,11 +119,7 @@ module vnetDeployment 'br/public:avm/res/network/virtual-network:0.5.4' = {
         networkSecurityGroupResourceId: m365nsg.outputs.id
         privateEndpointNetworkPolicies: 'Disabled'
         privateLinkServiceNetworkPolicies: 'Enabled'
-        serviceEndpoints: [ 
-          'Microsoft.CognitiveServices'
-          'Microsoft.KeyVault'
-          'Microsoft.Storage'
-          'Microsoft.Web'
+        serviceEndpoints: [
         ]
         defaultOutboundAccess: false
       }
@@ -362,7 +359,7 @@ module keyvaultPrivateEndpoint 'br/public:avm/res/network/private-endpoint:0.10.
   }
 }
 
-module aoaiDeployment 'br/public:avm/res/cognitive-services/account:0.5.3' = {
+module aoaiDeployment 'br/public:avm/res/cognitive-services/account:0.10.2' = {
   name: 'aoai-deployment'
   scope: rg
   params: {
@@ -377,10 +374,6 @@ module aoaiDeployment 'br/public:avm/res/cognitive-services/account:0.5.3' = {
     networkAcls: {
       defaultAction: 'Deny'
       virtualNetworkRules: [
-        {
-          id: vnetDeployment.outputs.subnetResourceIds[0]
-          action: 'Allow'
-        }
       ]
       ipRules: concat([
         {
@@ -441,8 +434,9 @@ module aoaiDeployment 'br/public:avm/res/cognitive-services/account:0.5.3' = {
   dependsOn: [privateDnsZones]
 }
 
-
-module searchServiceDeployment 'br/public:avm/res/search/search-service:0.9.1' = {
+// Note: Due to this issue(https://github.com/Azure/AzOps/issues/740) and need for support for qna feature,
+// for now, search service is deployed with addOrApiKey
+module searchServiceDeployment 'br/public:avm/res/search/search-service:0.9.2' = {
   name: 'search-service-deployment'
   scope: rg
   params: {
@@ -451,11 +445,14 @@ module searchServiceDeployment 'br/public:avm/res/search/search-service:0.9.1' =
     sku: 'basic'
     partitionCount: 1
     replicaCount: 1
-    disableLocalAuth: true // Disable local authentication
+    disableLocalAuth: false // issue 740-> local authentication
     managedIdentities: {
       systemAssigned: true
     }
-    authOptions: null // disable local auth => this should be null
+    authOptions:{
+      aadOrApiKey:{ aadAuthFailureMode:'http401WithBearerChallenge'}
+    }
+    //Note: authOptions: null // disable local auth => this should be null
     publicNetworkAccess: 'Enabled' // to open up the service to firewall-based access.
     networkRuleSet: {
       ipRules: concat([
@@ -471,17 +468,17 @@ module searchServiceDeployment 'br/public:avm/res/search/search-service:0.9.1' =
     roleAssignments: [
       {
         roleDefinitionIdOrName: 'Search Service Contributor'
-        principalId: aoaiDeployment.outputs.systemAssignedMIPrincipalId
+        principalId: aoaiDeployment.outputs.?systemAssignedMIPrincipalId ?? ''
         principalType: 'ServicePrincipal'
       }
       {
         roleDefinitionIdOrName:'Search Index Data Contributor'
-        principalId: aoaiDeployment.outputs.systemAssignedMIPrincipalId
+        principalId: aoaiDeployment.outputs.?systemAssignedMIPrincipalId ?? ''
         principalType: 'ServicePrincipal'
       }
       {
         roleDefinitionIdOrName:'Search Index Data Reader'
-        principalId:  aoaiDeployment.outputs.systemAssignedMIPrincipalId
+        principalId:  aoaiDeployment.outputs.?systemAssignedMIPrincipalId ?? ''
         principalType: 'ServicePrincipal'
       }
       {
@@ -507,6 +504,7 @@ module searchServiceDeployment 'br/public:avm/res/search/search-service:0.9.1' =
   dependsOn: [privateDnsZones]
 }
 
+
 module storageAccountDeployment 'br/public:avm/res/storage/storage-account:0.18.0' = {
   name: 'storage-account-deployment'
   scope: rg
@@ -521,13 +519,15 @@ module storageAccountDeployment 'br/public:avm/res/storage/storage-account:0.18.
     networkAcls: {
       defaultAction: 'Deny'
       bypass: 'AzureServices'
-      virtualNetworkRules: [
+      virtualNetworkRules: []
+      ipRules: concat([
         {
-          id: vnetDeployment.outputs.subnetResourceIds[0]
-          action: 'Allow'
+          value: azurePortalAccessIp
         }
-      ]
-
+        {
+          value: lbPublicIpAadress.outputs.ipAddress
+        }
+      ], varAllowedCidrBlocks)
     }
     blobServices:{
       containers: [
@@ -564,6 +564,11 @@ module storageAccountDeployment 'br/public:avm/res/storage/storage-account:0.18.
         roleDefinitionIdOrName: 'Storage Blob Data Contributor'
         principalType: 'User'
       }
+      {
+        principalId: userPrincipalId
+        roleDefinitionIdOrName: 'Storage File Data Privileged Contributor'
+        principalType: 'User'
+      }
     ]
     tags: tags
   }
@@ -583,7 +588,7 @@ module grantStroageContributorToOpenAI 'modules/storageRoleAssignment.bicep' = {
   name: 'grantStroageReaderToOpenAI'
   scope: rg
   params: {
-    principalId: aoaiDeployment.outputs.?systemAssignedMIPrincipalId
+    principalId: aoaiDeployment.outputs.?systemAssignedMIPrincipalId ?? ''
     storageAccountName: storageAccountName
     roleName: 'Storage Blob Data Contributor'
   }
@@ -670,3 +675,41 @@ module trustAzureServicesInSearch 'modules/trustAzureServices.bicep' = {
   }
 }
 
+// Lookup the Azure Search service to get its endpoint for the AI Foundry hub
+resource lookupSearchService 'Microsoft.Search/searchServices@2025-02-01-preview' existing = {
+  name: searchServiceName
+  scope: rg
+  dependsOn: [
+    searchServiceDeployment
+  ]
+}
+
+
+// Deploy Azure AI Foundry hub and project 
+module aiFoundryResource 'modules/aiFoundry/main.bicep' = {
+  name: 'aiFoundryDeployment'
+  scope: rg
+  params: {
+    resourceNamePrefix: resourceNamePrefix
+    location: location
+    tags: tags
+    keyVaultId: keyvaultDeployment.outputs.resourceId
+    openAiResourceId: aoaiDeployment.outputs.resourceId
+    searchResourceId: searchServiceDeployment.outputs.resourceId
+    openaiAccountName: aoaiServiceName
+    searchResourceName: searchServiceName
+    azureSearchTargetUrl: lookupSearchService.properties.endpoint
+    azureOpenAiTargetUrl: aoaiDeployment.outputs.endpoint
+    userPrincipalId: userPrincipalId  
+  }
+  dependsOn: [
+    trustAzureServicesInSearch
+    storageAccountPrivateEndpoint
+    keyvaultPrivateEndpoint
+    aoaiPrivateEndpoint
+    searchPrivateEndpoint
+  ]
+}
+
+#disable-next-line BCP036
+output searchQueryKey string = lookupSearchService.listQueryKeys().value[0].key

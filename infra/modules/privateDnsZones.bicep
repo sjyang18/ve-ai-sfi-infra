@@ -32,6 +32,15 @@ module cosmosdbDnsZone 'br/public:avm/res/network/private-dns-zone:0.7.0' = {
 module aiSearchDnsZone 'br/public:avm/res/network/private-dns-zone:0.7.0' = {
   name: 'aiSearchDnsZone'
   params: {
+    name: 'privatelink.search.${WindowsDotNetDnsZoneSuffix}'
+    virtualNetworkLinks: virtualNetworkLinks
+    tags: tags
+  }
+}
+
+module aiServiceDnsZone 'br/public:avm/res/network/private-dns-zone:0.7.0' = {
+  name: 'aiServiceDnsZone'
+  params: {
     name: 'privatelink.cognitiveservices.${AzureDotComDnsZoneSuffix}'
     virtualNetworkLinks: virtualNetworkLinks
     tags: tags
@@ -72,3 +81,12 @@ module fileShareDnsZone 'br/public:avm/res/network/private-dns-zone:0.7.0' = {
     tags: tags
   }
 }
+
+output keyvaultDnsZoneId string = keyvaultDnsZone.outputs.resourceId
+output cosmosdbDnsZoneId string = cosmosdbDnsZone.outputs.resourceId
+output aiSearchDnsZoneId string = aiSearchDnsZone.outputs.resourceId
+output openAIDnsZoneId string = openAIDnsZone.outputs.resourceId
+output redisDnsZoneId string = redisDnsZone.outputs.resourceId
+output blobDnsZoneId string = blobDnsZone.outputs.resourceId
+output fileShareDnsZoneId string = fileShareDnsZone.outputs.resourceId
+output aiServiceDnsZoneId string = aiServiceDnsZone.outputs.resourceId

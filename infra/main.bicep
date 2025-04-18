@@ -53,11 +53,20 @@ var _chatGptModelVersion = '2024-11-20'
 var _chatGptModelDeploymentType = 'GlobalStandard'
 var _chatGptDeploymentCapacity = 100
 
-var _embeddingsDeploymentName = 'text-embedding-3-small-deployment'
-var _embeddingsModelName = 'text-embedding-3-small'
+var _embeddingsDeploymentName = 'text-embedding-3-large-deployment'
+var _embeddingsModelName = 'text-embedding-3-large'
 var _embeddingsModelVersion = '1'
 var _embeddingsDeploymentType = 'Standard'
 var _embeddingsDeploymentCapacity = 120
+
+var ipAllowList = concat([
+  {
+    value: azurePortalAccessIp
+  }
+  {
+    value: lbPublicIpAadress.outputs.ipAddress
+  }
+], varAllowedCidrBlocks)
 
 
 resource rg 'Microsoft.Resources/resourceGroups@2022-09-01' = {
@@ -248,6 +257,7 @@ module jumpboxVm 'br/public:avm/res/compute/virtual-machine:0.12.3' = {
     name: jumpboxVmName
     location: location
     adminUsername: 'azureuser'
+    licenseType: 'Windows_Server'
     zone: 3
     adminPassword: jumpboxPassword
     // Fix NIC configurations to include required parameters
@@ -260,14 +270,14 @@ module jumpboxVm 'br/public:avm/res/compute/virtual-machine:0.12.3' = {
             name: 'ipconfig1'
             subnetResourceId: vnetDeployment.outputs.subnetResourceIds[3] // JumpboxSubnet
             privateIPAllocationMethod: 'Dynamic'
+            loadBalancerBackendAddressPools: [
+              {
+                id: loadBalancer.outputs.backendpools[0].id // JumpboxBackendPool
+              }
+            ]
           }
         ]
-        loadBalancerBackendAddressPools: [
-          {
-            id: loadBalancer.outputs.backendpools[0].id // JumpboxBackendPool
-          }
-        ]
-        enableAcceleratedNetworking: false
+        enableAcceleratedNetworking: true
       }
     ]
     osType: 'Windows'
@@ -291,15 +301,16 @@ module jumpboxVm 'br/public:avm/res/compute/virtual-machine:0.12.3' = {
     secureBootEnabled: true
     securityType: 'TrustedLaunch'
     patchMode: 'AutomaticByPlatform'
+    patchAssessmentMode: 'ImageDefault'
+    provisionVMAgent: true
     encryptionAtHost: false
+    rebootSetting: 'IfRequired'
     tags: tags
   }
   dependsOn: [
     bastionHost
   ]
 }
-
-
 
 module privateDnsZones 'modules/privateDnsZones.bicep' = {
   name: 'privateDnsZones'
@@ -308,6 +319,90 @@ module privateDnsZones 'modules/privateDnsZones.bicep' = {
     vnetId: vnetDeployment.outputs.resourceId
     tags: tags
   }
+}
+
+// Add App Service Plan and Web App
+var appServicePlanName = '${resourceNamePrefix}-plan'
+var webAppName = '${resourceNamePrefix}-webapp'
+
+module appServicePlan 'br/public:avm/res/web/serverfarm:0.4.1' = {
+  name: 'app-service-plan-deployment'
+  scope: rg
+  params: {
+    name: appServicePlanName
+    location: location
+    skuName: 'S1' 
+    skuCapacity: 1 
+    reserved: true
+    tags: tags
+  }
+}
+
+module webApp 'br/public:avm/res/web/site:0.15.1' = {
+  name: 'web-app-deployment'
+  scope: rg
+  params: {
+    name: webAppName
+    location: location
+    kind: 'app,linux'
+    serverFarmResourceId: appServicePlan.outputs.resourceId
+    virtualNetworkSubnetId: vnetDeployment.outputs.subnetResourceIds[1] // WebAppSubnet
+    managedIdentities: {
+      systemAssigned: true
+    }
+    siteConfig: {
+      acrUseManagedIdentityCreds: false
+      http20Enabled: false
+      functionAppScaleLimit: 0
+      minimumElasticInstanceCount: 0
+      alwaysOn: true
+      linuxFxVersion: 'PYTHON|3.11'
+      vnetRouteAllEnabled: true // Route all traffic through VNet
+      cors: {
+        allowedOrigins: [
+          'https://portal.azure.com'
+        ]
+      }
+      appSettings: [
+        {
+          name: 'AZURE_OPENAI_SERVICE'
+          value: aoaiServiceName
+        }
+        {
+          name: 'AZURE_OPENAI_ENDPOINT'
+          value: aoaiDeployment.outputs.endpoint
+        }
+        {
+          name: 'AZURE_OPENAI_CHATGPT_DEPLOYMENT'
+          value: _chatGptDeploymentName
+        }
+        {
+          name: 'AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT'
+          value: _embeddingsDeploymentName
+        }
+        {
+          name: 'AZURE_SEARCH_SERVICE'
+          value: searchServiceName
+        }
+        {
+          name: 'AZURE_SEARCH_ENDPOINT'
+          value: lookupSearchService.properties.endpoint
+        }
+        {
+          name: 'AZURE_SEARCH_INDEX'
+          value: 'your-search-index'
+        }
+        {
+          name: 'AZURE_CLIENT_ID'
+          value: ''
+        }
+      ]
+    }
+    tags: tags
+  }
+  dependsOn: [
+    keyvaultDeployment
+  ]
 }
 
 module keyvaultDeployment 'br/public:avm/res/key-vault/vault:0.12.1' = {
@@ -355,6 +450,15 @@ module keyvaultPrivateEndpoint 'br/public:avm/res/network/private-endpoint:0.10.
         }
       }
     ]
+    privateDnsZoneGroup: {
+      name: 'default'
+      privateDnsZoneGroupConfigs: [
+        {
+          name: 'keyvaultDnsZone'
+          privateDnsZoneResourceId: privateDnsZones.outputs.keyvaultDnsZoneId
+        }
+      ]
+    }
     tags: tags
   }
 }
@@ -375,14 +479,7 @@ module aoaiDeployment 'br/public:avm/res/cognitive-services/account:0.10.2' = {
       defaultAction: 'Deny'
       virtualNetworkRules: [
       ]
-      ipRules: concat([
-        {
-          value: azurePortalAccessIp
-        }
-        {
-          value: lbPublicIpAadress.outputs.ipAddress
-        }
-      ], varAllowedCidrBlocks)
+      ipRules: ipAllowList
       bypass: 'AzureServices'
     }
     roleAssignments: [
@@ -455,14 +552,7 @@ module searchServiceDeployment 'br/public:avm/res/search/search-service:0.9.2' =
     //Note: authOptions: null // disable local auth => this should be null
     publicNetworkAccess: 'Enabled' // to open up the service to firewall-based access.
     networkRuleSet: {
-      ipRules: concat([
-        {
-          value: azurePortalAccessIp
-        }
-        {
-          value: lbPublicIpAadress.outputs.ipAddress
-        }
-      ], varAllowedCidrBlocks)
+      ipRules: ipAllowList
       bypass: 'AzurePortal'
     }
     roleAssignments: [
@@ -520,14 +610,7 @@ module storageAccountDeployment 'br/public:avm/res/storage/storage-account:0.18.
       defaultAction: 'Deny'
       bypass: 'AzureServices'
       virtualNetworkRules: []
-      ipRules: concat([
-        {
-          value: azurePortalAccessIp
-        }
-        {
-          value: lbPublicIpAadress.outputs.ipAddress
-        }
-      ], varAllowedCidrBlocks)
+      ipRules: ipAllowList
     }
     blobServices:{
       containers: [
@@ -621,6 +704,15 @@ module storageAccountPrivateEndpoint 'br/public:avm/res/network/private-endpoint
         }
       }
     ]
+    privateDnsZoneGroup: {
+      name: 'default'
+      privateDnsZoneGroupConfigs: [
+        {
+          name: 'blobDnsZone'
+          privateDnsZoneResourceId: privateDnsZones.outputs.blobDnsZoneId
+        }
+      ]
+    }
     tags: tags
   }
 }
@@ -640,6 +732,15 @@ module aoaiPrivateEndpoint 'br/public:avm/res/network/private-endpoint:0.10.1' =
         }
       }
     ]
+    privateDnsZoneGroup: {
+      name: 'default'
+      privateDnsZoneGroupConfigs: [
+        {
+          name: 'onpenaiDnsZone'
+          privateDnsZoneResourceId: privateDnsZones.outputs.openAIDnsZoneId
+        }
+      ]
+    }
     tags: tags
   }
 }
@@ -660,6 +761,15 @@ module searchPrivateEndpoint 'br/public:avm/res/network/private-endpoint:0.10.1'
         }
       }
     ]
+    privateDnsZoneGroup: {
+      name: 'srcDnsZoneGroup'
+      privateDnsZoneGroupConfigs: [
+        {
+          name: 'srcDnsZoneGroup'
+          privateDnsZoneResourceId: privateDnsZones.outputs.aiSearchDnsZoneId
+        }
+      ]
+    }
     tags: tags
   }
 }
@@ -675,17 +785,57 @@ module trustAzureServicesInSearch 'modules/trustAzureServices.bicep' = {
   }
 }
 
-// Lookup the Azure Search service to get its endpoint for the AI Foundry hub
-resource lookupSearchService 'Microsoft.Search/searchServices@2025-02-01-preview' existing = {
-  name: searchServiceName
+// Grant the Web App's managed identity access to Azure OpenAI
+module webAppOpenAiRoleAssignment 'modules/aiServiceRoleAssignment.bicep' = {
+  name: 'webAppOpenAiRoleAssignment'
   scope: rg
+  params: {
+    // Added safe access operator and default value
+    principalId: webApp.outputs.?systemAssignedMIPrincipalId ?? '' 
+    openaiAccountName: aoaiServiceName
+  }
+}
+
+// Grant the Web App's managed identity access to Azure Search
+module webAppSearchRoleAssignment 'modules/searchRoleAssignment.bicep' = {
+  name: 'webAppSearchRoleAssignment'
+  scope: rg
+  params: {
+    // Added safe access operator and default value
+    principalId: webApp.outputs.?systemAssignedMIPrincipalId ?? '' 
+    searchAccountName: searchServiceName
+    roleName: 'Search Index Data Reader'
+  }
   dependsOn: [
     searchServiceDeployment
   ]
 }
 
+// Grant the Web App's managed identity access to Key Vault secrets
+module webAppKeyVaultRoleAssignment 'modules/kvRoleAssignment.bicep' = {
+  name: 'webAppKeyVaultRoleAssignment'
+  scope: rg
+  params: {
+    // Added safe access operator and default value
+    principalId: webApp.outputs.?systemAssignedMIPrincipalId ?? '' 
+    keyVaultId: keyvaultName
+    roleName: 'Key Vault Secrets User'
+  }
+  dependsOn: [
+    keyvaultDeployment
+  ]
+}
 
-// Deploy Azure AI Foundry hub and project 
+// Lookup the Azure Search service to get its endpoint for the AI Foundry hub
+resource lookupSearchService 'Microsoft.Search/searchServices@2025-02-01-preview' existing = {
+  name: searchServiceName
+  scope: rg
+  dependsOn: [
+    trustAzureServicesInSearch
+    searchServiceDeployment
+  ]
+}
+
 module aiFoundryResource 'modules/aiFoundry/main.bicep' = {
   name: 'aiFoundryDeployment'
   scope: rg
@@ -700,7 +850,8 @@ module aiFoundryResource 'modules/aiFoundry/main.bicep' = {
     searchResourceName: searchServiceName
     azureSearchTargetUrl: lookupSearchService.properties.endpoint
     azureOpenAiTargetUrl: aoaiDeployment.outputs.endpoint
-    userPrincipalId: userPrincipalId  
+    userPrincipalId: userPrincipalId
+    ipAllowList: ipAllowList
   }
   dependsOn: [
     trustAzureServicesInSearch
@@ -711,5 +862,4 @@ module aiFoundryResource 'modules/aiFoundry/main.bicep' = {
   ]
 }
 
-#disable-next-line BCP036
-output searchQueryKey string = lookupSearchService.listQueryKeys().value[0].key
+

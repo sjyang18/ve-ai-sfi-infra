@@ -39,6 +39,7 @@ param ipAllowList array =[]
 @description('user principal id passed thru azd')
 param userPrincipalId string
 
+
 var aiFoundaryHubStorageAccountName = '${resourceNamePrefix}hsa'
 var aiFoundryHubName = '${resourceNamePrefix}-afhub'
 var aiFoundaryPrjName = '${resourceNamePrefix}-afprj'
@@ -54,12 +55,12 @@ module aiFoundaryStorageAccountDeployment 'br/public:avm/res/storage/storage-acc
     kind: 'StorageV2'
     isLocalUserEnabled: false
     allowSharedKeyAccess: false
-    publicNetworkAccess: 'Disabled'
+    publicNetworkAccess: 'Enabled'
     networkAcls: {
       defaultAction: 'Deny'
       bypass: 'AzureServices'
       virtualNetworkRules: []
-      ipRules:[]
+      ipRules: ipAllowList
     }
     roleAssignments: [
       {
@@ -108,7 +109,6 @@ module aiFoundryHub 'br/public:avm/res/machine-learning-services/workspace:0.12.
         principalId: userPrincipalId
       }
     ]
-    ipAllowlist: ipAllowList
     provisionNetworkNow:true
   }
 }
@@ -116,6 +116,62 @@ module aiFoundryHub 'br/public:avm/res/machine-learning-services/workspace:0.12.
 resource lookupAiFoundryHub 'Microsoft.MachineLearningServices/workspaces@2024-10-01' existing = {
   name: aiFoundryHubName
   scope: resourceGroup()
+  dependsOn: [
+    aiFoundryHub
+  ]
+}
+
+resource openAIOutboundFromHub 'Microsoft.MachineLearningServices/workspaces/outboundRules@2024-10-01' = {
+  parent: lookupAiFoundryHub
+  name: 'openAI-pe-from-hub'
+  properties: {
+    category: 'UserDefined'
+    type: 'PrivateEndpoint'
+    destination: {
+      serviceResourceId: openAiResourceId
+      sparkEnabled: false
+      subresourceTarget: 'account'
+    }
+  }
+  dependsOn: [
+    aiFoundryHub
+  ]
+}
+
+// Add connection to Azure OpenAI service
+resource openAiConnection 'Microsoft.MachineLearningServices/workspaces/connections@2024-10-01' = {
+  parent: lookupAiFoundryHub
+  name: openaiAccountName
+  properties: {
+    category: 'AzureOpenAI'
+    authType: 'AAD'
+    target: azureOpenAiTargetUrl
+    isSharedToAll: true
+    metadata: {
+      ApiType: 'Azure'
+      ResourceId: openAiResourceId
+      Location: location
+      ApiVersion: '2023-07-01-preview'
+      DeploymentApiVersion: '2023-10-01-preview'
+    }
+  }
+  dependsOn: [
+    openAIOutboundFromHub
+  ]
+}
+
+resource searchOutboundFromHub 'Microsoft.MachineLearningServices/workspaces/outboundRules@2024-10-01' = {
+  parent: lookupAiFoundryHub
+  name: 'srch-pe-from-hub'
+  properties: {
+    category: 'UserDefined'
+    type: 'PrivateEndpoint'
+    destination: {
+      serviceResourceId: searchResourceId
+      sparkEnabled: false
+      subresourceTarget: 'searchService'
+    }
+  }
   dependsOn: [
     aiFoundryHub
   ]
@@ -138,55 +194,10 @@ resource searchConnection 'Microsoft.MachineLearningServices/workspaces/connecti
       DeploymentApiVersion: '2023-11-01'
     }
   }
+  dependsOn: [
+    searchOutboundFromHub
+  ]
 }
-
-// Add connection to Azure OpenAI service
-resource openAiConnection 'Microsoft.MachineLearningServices/workspaces/connections@2024-10-01' = {
-  parent: lookupAiFoundryHub
-  name: openaiAccountName
-  properties: {
-    category: 'AzureOpenAI'
-    authType: 'AAD'
-    target: azureOpenAiTargetUrl
-    isSharedToAll: true
-    metadata: {
-      ApiType: 'Azure'
-      ResourceId: openAiResourceId
-      Location: location
-      ApiVersion: '2023-07-01-preview'
-      DeploymentApiVersion: '2023-10-01-preview'
-    }
-  }
-}
-
-resource openAIOutboundFromHub 'Microsoft.MachineLearningServices/workspaces/outboundRules@2024-10-01' = {
-  parent: lookupAiFoundryHub
-  name: 'openAI-pe-from-hub'
-  properties: {
-    category: 'UserDefined'
-    type: 'PrivateEndpoint'
-    destination: {
-      serviceResourceId: openAiResourceId
-      sparkEnabled: false
-      subresourceTarget: 'account'
-    }
-  }
-}
-
-resource searchOutboundFromHub 'Microsoft.MachineLearningServices/workspaces/outboundRules@2024-10-01' = {
-  parent: lookupAiFoundryHub
-  name: 'search-pe-from-hub'
-  properties: {
-    category: 'UserDefined'
-    type: 'PrivateEndpoint'
-    destination: {
-      serviceResourceId: searchResourceId
-      sparkEnabled: false
-      subresourceTarget: 'searchService'
-    }
-  }
-}
-
 
 module project 'br/public:avm/res/machine-learning-services/workspace:0.12.0' = {
   name: 'aiFoundaryProjectDeployment'

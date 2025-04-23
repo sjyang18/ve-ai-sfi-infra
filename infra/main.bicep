@@ -68,13 +68,24 @@ var ipAllowList = concat([
   }
 ], varAllowedCidrBlocks)
 
+// Add Log Analytics Workspace at resource group scope
+module logAnalyticsWorkspace 'br/public:avm/res/operational-insights/workspace:0.5.0' = {
+  name: 'log-analytics-workspace-deployment'
+  scope: rg
+  params: {
+    name: '${resourceNamePrefix}-law'
+    location: location
+    dataRetention: 30
+    skuName: 'PerGB2018'
+    tags: tags
+  }
+}
 
 resource rg 'Microsoft.Resources/resourceGroups@2022-09-01' = {
   name: resourceGroupName
   location: location
   tags: tags
 }
-
 
 module userAssignedIdentity 'br/public:avm/res/managed-identity/user-assigned-identity:0.4.0' = {
   name: identityName
@@ -260,7 +271,7 @@ module jumpboxVm 'br/public:avm/res/compute/virtual-machine:0.12.3' = {
     licenseType: 'Windows_Server'
     zone: 3
     adminPassword: jumpboxPassword
-    // Fix NIC configurations to include required parameters
+    // Fix NIC configurations to remove backend pool association that's causing the conflict
     nicConfigurations: [
       {
         name: '${resourceNamePrefix}-jumpbox-nic-configuration'  // Add explicit name
@@ -270,11 +281,7 @@ module jumpboxVm 'br/public:avm/res/compute/virtual-machine:0.12.3' = {
             name: 'ipconfig1'
             subnetResourceId: vnetDeployment.outputs.subnetResourceIds[3] // JumpboxSubnet
             privateIPAllocationMethod: 'Dynamic'
-            loadBalancerBackendAddressPools: [
-              {
-                id: loadBalancer.outputs.backendpools[0].id // JumpboxBackendPool
-              }
-            ]
+            // Removing loadBalancerBackendAddressPools to avoid conflict with load balancer
           }
         ]
         enableAcceleratedNetworking: true
@@ -309,6 +316,33 @@ module jumpboxVm 'br/public:avm/res/compute/virtual-machine:0.12.3' = {
   }
   dependsOn: [
     bastionHost
+  ]
+}
+
+// After the jumpbox VM deployment, add this module to associate the VM's NIC with the backend pool
+module associateJumpboxToBackendPool 'br/public:avm/res/network/network-interface:0.5.0' = {
+  name: 'associate-jumpbox-to-backendpool'
+  scope: rg
+  params: {
+    name: '${jumpboxVmName}-nic'
+    location: location
+    ipConfigurations: [
+      {
+        name: 'ipconfig1'
+        subnetResourceId: vnetDeployment.outputs.subnetResourceIds[3] // JumpboxSubnet
+        privateIPAllocationMethod: 'Dynamic'
+        loadBalancerBackendAddressPools: [
+          {
+            id: loadBalancer.outputs.backendpools[0].id // JumpboxBackendPool
+          }
+        ]
+      }
+    ]
+    tags: tags
+  }
+  dependsOn: [
+    jumpboxVm
+    loadBalancer
   ]
 }
 
@@ -417,6 +451,25 @@ module keyvaultDeployment 'br/public:avm/res/key-vault/vault:0.12.1' = {
       bypass: 'AzureServices'
       defaultAction: 'Deny'
     }
+    diagnosticSettings: [
+      {
+        name: 'keyvault-diagnostic-settings'
+        workspaceResourceId: logAnalyticsWorkspace.outputs.resourceId
+        logCategoriesAndGroups:[
+          {
+            category: null
+            categoryGroup: 'audit'
+            enabled: true
+          }
+          {
+            category: null
+            categoryGroup: 'allLogs'
+            enabled: true
+          }
+        ]
+      }
+      
+    ]
     roleAssignments:[
       {
         roleDefinitionIdOrName: 'Key Vault Secrets Officer'
@@ -482,6 +535,24 @@ module aoaiDeployment 'br/public:avm/res/cognitive-services/account:0.10.2' = {
       ipRules: ipAllowList
       bypass: 'AzureServices'
     }
+    diagnosticSettings: [
+      {
+        name: 'aoai-diagnostic-settings'
+        workspaceResourceId: logAnalyticsWorkspace.outputs.resourceId
+        logCategoriesAndGroups:[
+          {
+            category: null
+            categoryGroup: 'audit'
+            enabled: true
+          }
+          {
+            category: null
+            categoryGroup: 'allLogs'
+            enabled: true
+          }
+        ]
+      }
+    ]
     roleAssignments: [
       {
         roleDefinitionIdOrName: 'Cognitive Services Contributor'
@@ -589,6 +660,24 @@ module searchServiceDeployment 'br/public:avm/res/search/search-service:0.9.2' =
         requestMessage: 'Please approve the request to connect to the storage account from search service'
       }
     ]
+    diagnosticSettings: [
+      {
+        name: 'search-service-diagnostic-settings'
+        workspaceResourceId: logAnalyticsWorkspace.outputs.resourceId
+        logCategoriesAndGroups:[
+          {
+            category: null
+            categoryGroup: 'audit'
+            enabled: true
+          }
+          {
+            category: null
+            categoryGroup: 'allLogs'
+            enabled: true
+          }
+        ]
+      }
+    ]
     tags: tags
   }
   dependsOn: [privateDnsZones]
@@ -651,6 +740,26 @@ module storageAccountDeployment 'br/public:avm/res/storage/storage-account:0.18.
         principalId: userPrincipalId
         roleDefinitionIdOrName: 'Storage File Data Privileged Contributor'
         principalType: 'User'
+      }
+    ]
+    diagnosticSettings: [
+      {
+        name: 'storage-account-diagnostic-settings'
+        workspaceResourceId: logAnalyticsWorkspace.outputs.resourceId
+        logCategoriesAndGroups:[
+          {
+            category: 'StorageRead'
+            enabled: true
+          }
+          {
+            category:'StorageWrite'
+            enabled: true
+          }
+          {
+            category:'StorageDelete'
+            enabled: true
+          }
+        ]
       }
     ]
     tags: tags
@@ -852,6 +961,7 @@ module aiFoundryResource 'modules/aiFoundry/main.bicep' = {
     azureOpenAiTargetUrl: aoaiDeployment.outputs.endpoint
     userPrincipalId: userPrincipalId
     ipAllowList: ipAllowList
+    logAnalyticsWorkspaceId: logAnalyticsWorkspace.outputs.resourceId
   }
   dependsOn: [
     trustAzureServicesInSearch

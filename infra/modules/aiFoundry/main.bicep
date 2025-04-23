@@ -39,6 +39,9 @@ param ipAllowList array =[]
 @description('user principal id passed thru azd')
 param userPrincipalId string
 
+@description('log analytics workspace resource id')
+param logAnalyticsWorkspaceId string
+
 
 var aiFoundaryHubStorageAccountName = '${resourceNamePrefix}hsa'
 var aiFoundryHubName = '${resourceNamePrefix}-afhub'
@@ -74,6 +77,22 @@ module aiFoundaryStorageAccountDeployment 'br/public:avm/res/storage/storage-acc
         principalType: 'User'
       }
     ]
+    diagnosticSettings: [{
+      name: 'diagnosticSettings'
+      workspaceResourceId: logAnalyticsWorkspaceId
+      logCategoriesAndGroups:[
+        {
+          category: null
+          categoryGroup: 'audit'
+          enabled: true
+        }
+        {
+          category: null
+          categoryGroup: 'allLogs'
+          enabled: true
+        }
+      ]
+    }]
     tags: tags
   }
 }
@@ -109,6 +128,23 @@ module aiFoundryHub 'br/public:avm/res/machine-learning-services/workspace:0.12.
         principalId: userPrincipalId
       }
     ]
+    diagnosticSettings: [{
+      name: 'diagnosticSettings'
+      workspaceResourceId: logAnalyticsWorkspaceId
+      logCategoriesAndGroups:[
+        {
+          category: null
+          categoryGroup: 'audit'
+          enabled: true
+        }
+        {
+          category: null
+          categoryGroup: 'allLogs'
+          enabled: true
+        }
+      ]
+      
+    }]
     provisionNetworkNow:true
   }
 }
@@ -219,6 +255,23 @@ module project 'br/public:avm/res/machine-learning-services/workspace:0.12.0' = 
         principalId: userPrincipalId
       }
     ]
+    diagnosticSettings: [{
+      name: 'diagnosticSettings'
+      workspaceResourceId: logAnalyticsWorkspaceId
+      logCategoriesAndGroups:[
+        {
+          category: null
+          categoryGroup: 'audit'
+          enabled: true
+        }
+        {
+          category: null
+          categoryGroup: 'allLogs'
+          enabled: true
+        }
+      ]
+      
+    }]
   }
   
   dependsOn: [

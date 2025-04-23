@@ -34,6 +34,16 @@ module searchRoleAssignment '../../modules/searchRoleAssignment.bicep' = {
 }
 
 
+module searchServiceContributorRole '../../modules/searchRoleAssignment.bicep' = {
+  name: 'searchServiceContributorRole-${uniqueString(principalId, searchResourceId)}'
+  params: {
+    principalId: principalId
+    searchAccountName: searchResourceId
+    roleName: 'Search Service Contributor'
+  }
+}
+
+
 // Grant Key Vault Secrets Officer role
 module kvSecretsOfficerRoleAssignment '../../modules/kvRoleAssignment.bicep' = {
   name: 'kvSecretsOfficerRoleAssignment-${uniqueString(principalId, keyVaultId)}'

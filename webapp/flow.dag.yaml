@@ -1,0 +1,23 @@
+$schema: https://azuremlschemas.azureedge.net/promptflow/latest/Flow.schema.json
+inputs:
+  chat_input:
+    type: string
+  chat_history:
+    type: list
+  documents:
+    type: object
+outputs:
+  output:
+    type: string
+nodes:
+- name: chat_with_documents
+  type: prompt
+  source:
+    type: prompt
+    path: chat.prompty
+  inputs:
+    chat_input: ${inputs.chat_input}
+    chat_history: ${inputs.chat_history}
+    documents: ${inputs.documents}
+  connection: azure_openai
+  api: chat

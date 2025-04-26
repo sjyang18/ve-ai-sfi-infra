@@ -1,0 +1,6 @@
+streamlit==1.44.1
+python-dotenv==1.0.1
+azure-identity==1.16.0
+openai==1.55.3
+azure-search-documents==11.5.2
+promptflow[azure]==1.17.2
